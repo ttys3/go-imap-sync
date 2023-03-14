@@ -17,4 +17,5 @@
 messages/
 
 # Binary
-cmd/go-imap-sync/go-imap-sync
+/cmd/go-imap-sync/go-imap-sync
+/go-imap-sync

@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 
-	"github.com/JohannesEbke/go-imap-sync"
 	"github.com/howeyc/gopass"
 )
 
@@ -41,7 +40,7 @@ func main() {
 
 	password := getPassword(username, server)
 
-	_, err := imapsync.Sync(server, username, password, mailbox, emailDir)
+	_, err := Sync(server, username, password, mailbox, emailDir)
 	if err != nil {
 		log.Fatal(err)
 	}

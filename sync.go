@@ -2,7 +2,7 @@
 // in a plain text file. Emails are downloaded only once, even if the function is run repeatedly.
 //
 // A command line tool is available at https://github.com/JohannesEbke/go-imap-sync/cmd/go-imap-sync
-package imapsync
+package main
 
 import (
 	"crypto/sha512"
@@ -118,6 +118,7 @@ func getMessageIDMap(c *client.Client) (emails map[uint32]string) {
 		}
 	}()
 	for msg := range messageChan {
+		log.Printf("get msg %v", msg.SeqNum)
 		emails[msg.SeqNum] = msg.Envelope.MessageId
 	}
 	return
@@ -155,6 +156,7 @@ func fetchMessages(connection *client.Client, emailDir string, messagesToFetch *
 		if err != nil {
 			return err
 		}
+		log.Printf("Writing message %v to %v", msg.Envelope.MessageId, messageFileName(emailDir, msg.Envelope.MessageId))
 		err = ioutil.WriteFile(messageFileName(emailDir, msg.Envelope.MessageId), body, 0600)
 		if err != nil {
 			return err
