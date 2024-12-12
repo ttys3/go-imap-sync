@@ -132,12 +132,13 @@ func Sync(server, user, password, mailbox, emailDir string) (*Result, error) {
 
 			switch item := item.(type) {
 			case imapclient.FetchItemDataUID:
-				log.Printf("UID: %v", item.UID)
+				slog.Debug("got FetchItemDataUID", "uid", item.UID)
 				uid = uint32(item.UID)
 			case imapclient.FetchItemDataEnvelope:
-				log.Printf("Envelope MessageID: %v", item.Envelope.MessageID)
+				slog.Debug("got FetchItemDataEnvelope", "messageID", item.Envelope.MessageID)
 				envelope = item.Envelope
 			case imapclient.FetchItemDataBodySection:
+				slog.Debug("got FetchItemDataBodySection", "bodySection", item)
 				bodySection = item
 			}
 
@@ -145,35 +146,47 @@ func Sync(server, user, password, mailbox, emailDir string) (*Result, error) {
 			if uid != 0 && envelope != nil && bodySection.Literal != nil {
 				seqNumMessageIDMap[uid] = envelope.MessageID
 
-				slog.Debug("have all data we need", "seq", msg.SeqNum, "uid", uid,
-					"messageID", envelope.MessageID, "subject", envelope.Subject)
+				log := slog.With("seq", msg.SeqNum, "uid", uid, "messageID", envelope.MessageID, "subject", envelope.Subject)
+				log.Debug("have all data we need")
 
 				exists, err := fileExists(messageFileName(emailDir, envelope.MessageID))
 				if err != nil {
-					log.Fatal(err)
+					log.Error("error checking if message file exists", "error", err)
+					continue
 				}
 				if exists {
+					log.Debug("skip write due to message already exists")
 					result.ExistingEmails = append(result.ExistingEmails, messageFileName(emailDir, envelope.MessageID))
 				} else {
 					result.NewEmails = append(result.NewEmails, messageFileName(emailDir, envelope.MessageID))
-					log.Printf("Writing message %v to %v", envelope.MessageID, messageFileName(emailDir, envelope.MessageID))
 
 					body, err := io.ReadAll(bodySection.Literal)
 					if err != nil {
-						log.Fatalf("failed to read body section: %v", err)
+						log.Error("failed to read body section", "error", err)
+						continue
 					}
-					slog.Debug("Body", "body", string(body))
+					// slog.Debug("read body success", "body", string(body))
+					log.Debug("writing message", "to", messageFileName(emailDir, envelope.MessageID))
+
 					err = os.WriteFile(messageFileName(emailDir, envelope.MessageID), body, 0o600)
 					if err != nil {
-						log.Fatalf("failed to write body to file: %v", err)
+						log.Error("failed to write body to file", "error", err)
+						continue
 					}
+					log.Debug("write message success")
 				}
 				break
 			}
 		}
+
+		// check invalid data
+		if uid == 0 || envelope == nil || bodySection.Literal == nil {
+			slog.Error("invalid data", "seq", msg.SeqNum, "uid", uid, "envelope", envelope, "bodySection", bodySection)
+			continue
+		}
 	}
 
-	log.Printf("Finished syncing.")
+	slog.Info("Finished syncing")
 
 	return &result, nil
 }

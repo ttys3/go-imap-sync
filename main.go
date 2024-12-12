@@ -4,9 +4,11 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/howeyc/gopass"
 )
@@ -40,7 +42,20 @@ func main() {
 	}
 
 	// set slog text global logger
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true})))
+	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level:     slog.LevelDebug,
+		AddSource: true,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.SourceKey {
+				source := a.Value.Any().(*slog.Source)
+				shortFilename := fmt.Sprintf("%s:%d:%s", filepath.Base(source.File), source.Line, source.Function)
+				a.Value = slog.StringValue(shortFilename)
+				return a
+			}
+			return a
+		},
+	})
+	slog.SetDefault(slog.New(handler))
 
 	password := getPassword(username, server)
 
