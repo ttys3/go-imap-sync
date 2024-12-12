@@ -5,6 +5,7 @@ package main
 import (
 	"flag"
 	"log"
+	"log/slog"
 	"os"
 
 	"github.com/howeyc/gopass"
@@ -14,7 +15,7 @@ func getPassword(username, server string) (password string) {
 	password = os.Getenv("IMAP_PASSWORD")
 
 	if password == "" {
-		log.Printf("Enter IMAP Password for %v on %v: ", username, server)
+		log.Printf("Enter IMAP Password for %v on %v:", username, server)
 		passwordBytes, err := gopass.GetPasswd()
 		if err != nil {
 			panic(err)
@@ -37,6 +38,9 @@ func main() {
 		flag.PrintDefaults()
 		log.Fatal("Required parameters not found.")
 	}
+
+	// set slog text global logger
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true})))
 
 	password := getPassword(username, server)
 

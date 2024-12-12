@@ -9,13 +9,16 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
+	"log/slog"
+	"mime"
 	"os"
 	"path/filepath"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/client"
+	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
+	client "github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-message/charset"
 )
 
 // Result contains slices of (relative) paths to the newly (NewEmails) and previously downloaded emails (ExistingEmails).
@@ -25,144 +28,151 @@ type Result struct {
 	NewEmails      []string
 }
 
-// Sync downloads and saves all not-yet downloaded emails from the mailbox to the emailDir
-func Sync(server, user, password, mailbox, emailDir string) (*Result, error) {
-	err := os.MkdirAll(emailDir, 0700)
-	if err != nil {
-		return nil, fmt.Errorf("Error creating email directory %v: %v", emailDir, err)
-	}
-
-	connection, err := connect(server, user, password)
-	if err != nil {
-		return nil, fmt.Errorf("Error connecting to %v: %v", server, err)
-	}
-
-	defer func() {
-		err2 := connection.Logout()
-		if err2 != nil {
-			log.Printf("Error on logout from %v: %v", server, err2)
-		}
-	}()
-
-	_, err = connection.Select(mailbox, true)
-	if err != nil {
-		return nil, fmt.Errorf("Error opening mailbox '%v': %v", mailbox, err)
-	}
-
-	log.Printf("Listing all messages in %v...", mailbox)
-	seqNumMessageIDMap := getMessageIDMap(connection)
-	log.Printf("Found %v messages. Looking for existing downloaded messages...", len(seqNumMessageIDMap))
-	messagesToFetch, toFetchCount := getMessagesToFetch(emailDir, seqNumMessageIDMap)
-	log.Printf("Syncing %v missing messages...", toFetchCount)
-	for _, messageSeqNr := range messagesToFetch {
-		seqSet := new(imap.SeqSet)
-		seqSet.AddNum(messageSeqNr)
-		err2 := fetchMessages(connection, emailDir, seqSet)
-		if err2 != nil {
-			return nil, fmt.Errorf("Error fetching message '%v': %v", messageSeqNr, err2)
-		}
-		fmt.Println(".")
-	}
-	log.Printf("Finished syncing.")
-
-	// Calculate Result structure
-	isNew := make(map[uint32]bool)
-	existingEmails := []string{}
-	newEmails := []string{}
-	for _, seqNum := range messagesToFetch {
-		newEmails = append(newEmails, messageFileName(emailDir, seqNumMessageIDMap[seqNum]))
-		isNew[seqNum] = true
-	}
-	for seqNum, messageID := range seqNumMessageIDMap {
-		if !isNew[seqNum] {
-			existingEmails = append(existingEmails, messageFileName(emailDir, messageID))
-		}
-	}
-	return &Result{
-		ExistingEmails: existingEmails,
-		NewEmails:      newEmails,
-	}, nil
-}
-
 // connect performs an interactive connection to the given IMAP server
 func connect(server, username, password string) (*client.Client, error) {
-	log.Printf("Connecting to %v...", server)
-	c, err := client.DialTLS(server, nil)
+	options := &imapclient.Options{
+		WordDecoder: &mime.WordDecoder{CharsetReader: charset.Reader},
+	}
+	slog.Debug("Connecting to server", "server", server, "user", username)
+	c, err := client.DialTLS(server, options)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error connecting to %v: %v", server, err)
 	}
-	log.Printf("Connected to %v.", server)
+	slog.Debug("connected to server, begin login", "server", server, "user", username)
 
-	if err := c.Login(username, password); err != nil {
-		if err2 := c.Logout(); err2 != nil {
-			return nil, fmt.Errorf("Error while logging in to %v: %v\n(followup error: %v)", server, err, err2)
-		}
-		return nil, fmt.Errorf("Error while logging in to %v: %v", server, err)
+	err = c.WaitGreeting()
+	if err != nil {
+		return nil, fmt.Errorf("error waiting for greeting from %v: %v", server, err)
 	}
-	log.Printf("Logged in as user %v on %v.", username, server)
+	slog.Debug("greeting received")
+
+	if err := c.Login(username, password).Wait(); err != nil {
+		if err2 := c.Logout().Wait(); err2 != nil {
+			return nil, fmt.Errorf("error while logging in to %v: %v\n(logout error: %v)", server, err, err2)
+		}
+		return nil, fmt.Errorf("error while logging in to %v: %v", server, err)
+	}
+	slog.Debug("Logged in as user", "user", username, "server", server)
 	return c, nil
 }
 
-// getMessageIDMap lists all messages in the current mailbox and returns a map of sequence numbers to email MessageID
-func getMessageIDMap(c *client.Client) (emails map[uint32]string) {
-	emails = make(map[uint32]string)
-	// Get all messages
-	seqset, err := imap.ParseSeqSet("1:*")
+// Sync downloads and saves all not-yet downloaded emails from the mailbox to the emailDir
+func Sync(server, user, password, mailbox, emailDir string) (*Result, error) {
+	err := os.MkdirAll(emailDir, 0o700)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("error creating email directory %v: %v", emailDir, err)
 	}
-	messageChan := make(chan *imap.Message)
-	go func() {
-		if err := c.Fetch(seqset, []imap.FetchItem{imap.FetchEnvelope, imap.FetchUid}, messageChan); err != nil {
-			log.Fatalf("Error fetching list of messages: %v", err)
+
+	slog.Debug("Connecting to server", "server", server, "user", user)
+	connection, err := connect(server, user, password)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		err2 := connection.Logout().Wait()
+		if err2 != nil {
+			slog.Error("error on logout from server", "server", server, "user", user, "error", err2)
 		}
 	}()
-	for msg := range messageChan {
-		log.Printf("get msg %v", msg.SeqNum)
-		emails[msg.SeqNum] = msg.Envelope.MessageId
-	}
-	return
-}
 
-// getMessagesToFetch determines which messages listed in the map should be downloaded from the server
-func getMessagesToFetch(emailDir string, seqNumMessageIDMap map[uint32]string) (messagesToFetch []uint32, toFetchCount uint) {
-	for seqNum, messageID := range seqNumMessageIDMap {
-		exists, err := fileExists(messageFileName(emailDir, messageID))
-		if err != nil {
-			log.Fatal(err)
-		}
-		if !exists {
-			messagesToFetch = append(messagesToFetch, seqNum)
-			toFetchCount++
-		}
-	}
-	return
-}
+	selectCmd := connection.Select(mailbox, &imap.SelectOptions{})
 
-// fetchMessages downloads the messages specified by the given SeqSet to the emailDir
-func fetchMessages(connection *client.Client, emailDir string, messagesToFetch *imap.SeqSet) error {
-	messageChan := make(chan *imap.Message)
-	section := &imap.BodySectionName{}
-	done := make(chan error, 1)
-	go func() {
-		done <- connection.Fetch(messagesToFetch, []imap.FetchItem{imap.FetchEnvelope, section.FetchItem()}, messageChan)
-	}()
-	for msg := range messageChan {
-		sectionName, err := imap.ParseBodySectionName(imap.FetchItem("BODY[]"))
-		if err != nil {
-			return err
+	selectData, err := selectCmd.Wait()
+	if err != nil {
+		return nil, fmt.Errorf("error selecting mailbox %v: %v", mailbox, err)
+	}
+	slog.Debug("selected mailbox", "mailbox", mailbox, "numMessages", selectData.NumMessages, "selectData", selectData)
+
+	// Send a FETCH command to fetch the message body
+	seqSet := imap.SeqSetNum(1)
+	fetchOptions := &imap.FetchOptions{
+		UID:         true,
+		Envelope:    true,
+		BodySection: []*imap.FetchItemBodySection{{}},
+	}
+	fetchCmd := connection.Fetch(seqSet, fetchOptions)
+	defer fetchCmd.Close()
+
+	var result Result
+	// a map of sequence numbers to email MessageID
+	seqNumMessageIDMap := make(map[uint32]string)
+	// see https://pkg.go.dev/github.com/emersion/go-imap/v2/imapclient#example-Client.Fetch-StreamBody
+
+	slog.Debug("listing all messages in mailbox", "mailbox", mailbox)
+	for {
+		slog.Debug("fetching message")
+		msg := fetchCmd.Next()
+		if msg == nil {
+			slog.Debug("stop fetching due to no more messages")
+			break
 		}
-		body, err := ioutil.ReadAll(msg.GetBody(sectionName))
-		if err != nil {
-			return err
-		}
-		log.Printf("Writing message %v to %v", msg.Envelope.MessageId, messageFileName(emailDir, msg.Envelope.MessageId))
-		err = ioutil.WriteFile(messageFileName(emailDir, msg.Envelope.MessageId), body, 0600)
-		if err != nil {
-			return err
+
+		slog.Debug("fetched message", "seq", msg.SeqNum)
+		// msgBuf, err := msg.Collect()
+		// if err != nil {
+		// 	log.Fatal(err)
+		// }
+		// slog.Info("parsed Message", "seq", msgBuf.SeqNum, "uid", msgBuf.Envelope.MessageID)
+
+		// get BodySectionName BODY[]
+		// Find the uid, envelope, body section in the response
+		var uid uint32
+		var envelope *imap.Envelope
+		var bodySection imapclient.FetchItemDataBodySection
+		for {
+			item := msg.Next()
+			if item == nil {
+				slog.Debug("stop parse due to no more items in message")
+				break
+			}
+
+			switch item := item.(type) {
+			case imapclient.FetchItemDataUID:
+				log.Printf("UID: %v", item.UID)
+				uid = uint32(item.UID)
+			case imapclient.FetchItemDataEnvelope:
+				log.Printf("Envelope MessageID: %v", item.Envelope.MessageID)
+				envelope = item.Envelope
+			case imapclient.FetchItemDataBodySection:
+				bodySection = item
+			}
+
+			// early return if we have all the data we need
+			if uid != 0 && envelope != nil && bodySection.Literal != nil {
+				seqNumMessageIDMap[uid] = envelope.MessageID
+
+				slog.Debug("have all data we need", "seq", msg.SeqNum, "uid", uid,
+					"messageID", envelope.MessageID, "subject", envelope.Subject)
+
+				exists, err := fileExists(messageFileName(emailDir, envelope.MessageID))
+				if err != nil {
+					log.Fatal(err)
+				}
+				if exists {
+					result.ExistingEmails = append(result.ExistingEmails, messageFileName(emailDir, envelope.MessageID))
+				} else {
+					result.NewEmails = append(result.NewEmails, messageFileName(emailDir, envelope.MessageID))
+					log.Printf("Writing message %v to %v", envelope.MessageID, messageFileName(emailDir, envelope.MessageID))
+
+					body, err := io.ReadAll(bodySection.Literal)
+					if err != nil {
+						log.Fatalf("failed to read body section: %v", err)
+					}
+					slog.Debug("Body", "body", string(body))
+					err = os.WriteFile(messageFileName(emailDir, envelope.MessageID), body, 0o600)
+					if err != nil {
+						log.Fatalf("failed to write body to file: %v", err)
+					}
+				}
+				break
+			}
 		}
 	}
-	return <-done
+
+	log.Printf("Finished syncing.")
+
+	return &result, nil
 }
 
 // sha512TruncatedHex returns a hex representation of the first 32 bytes of the SHA512 hash of the given string
