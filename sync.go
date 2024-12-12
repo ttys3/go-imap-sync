@@ -84,8 +84,11 @@ func Sync(server, user, password, mailbox, emailDir string) (*Result, error) {
 	}
 	slog.Debug("selected mailbox", "mailbox", mailbox, "numMessages", selectData.NumMessages, "selectData", selectData)
 
-	// Send a FETCH command to fetch the message body
+	// Send a FETCH command to fetch all message bodies
+	// Create sequence set for all messages (1:*)
 	seqSet := imap.SeqSetNum(1)
+	seqSet.AddRange(1, selectData.NumMessages) // Convert NumMessages to SeqNum type
+
 	fetchOptions := &imap.FetchOptions{
 		UID:         true,
 		Envelope:    true,
