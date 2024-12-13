@@ -158,8 +158,6 @@ func Sync(server, user, password, mailbox, emailDir string) (*Result, error) {
 					log.Debug("skip write due to message already exists")
 					result.ExistingEmails = append(result.ExistingEmails, messageFileName(emailDir, envelope.MessageID))
 				} else {
-					result.NewEmails = append(result.NewEmails, messageFileName(emailDir, envelope.MessageID))
-
 					body, err := io.ReadAll(bodySection.Literal)
 					if err != nil {
 						log.Error("failed to read body section", "error", err)
@@ -174,6 +172,7 @@ func Sync(server, user, password, mailbox, emailDir string) (*Result, error) {
 						continue
 					}
 					log.Debug("write message success")
+					result.NewEmails = append(result.NewEmails, messageFileName(emailDir, envelope.MessageID))
 				}
 				break
 			}
